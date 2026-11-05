@@ -5,8 +5,8 @@ ViewData["Title"] = "Chat";
 <div class="chat-layout">
 <section>
 <span class="eyebrow">@Model.ProviderLabel</span>
-<h1>Course data assistant</h1>
-<p class="muted">Try “Which three courses have the highest enrollment?”, “Tell me about AI-601,” or “Show online courses.”</p>
+<h1>Affiliate data assistant</h1>
+<p class="muted">Try “Find affiliate AFF-1001,” “Which campaign participants have no sales?”, or “Rank affiliates in SPRING-2026.”</p>
 <div class="transcript" aria-live="polite">
 @if (Model.Turns.Count == 0)
 {
@@ -22,7 +22,7 @@ ViewData["Title"] = "Chat";
         </div>
         <form asp-action="Ask" method="post" class="ask-form">
             <label asp-for="Question"></label>
-            <textarea asp-for="Question" rows="3" maxlength="500" placeholder="Ask a question grounded in the course database..."></textarea>
+            <textarea asp-for="Question" rows="3" maxlength="500" placeholder="Ask a question grounded in the affiliate data..."></textarea>
             <span asp-validation-for="Question" class="validation"></span>
             <button class="button" type="submit">Ask</button>
         </form>
@@ -30,10 +30,10 @@ ViewData["Title"] = "Chat";
     <aside>
         <h2>Available MCP tools</h2>
         <ul>
-            <li><code>search_courses</code></li>
-            <li><code>get_course_by_code</code></li>
-            <li><code>top_courses_by_enrollment</code></li>
-            <li><code>summarize_enrollment</code></li>
+            <li><code>affiliate_lookup</code></li>
+            <li><code>campaign_participants_without_sales</code></li>
+            <li><code>campaign_summary</code></li>
+            <li><code>affiliate_ranking</code></li>
         </ul>
         <form asp-action="Clear" method="post">
             <button class="link-button" type="submit">Clear conversation</button>

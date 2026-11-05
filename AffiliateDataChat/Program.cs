@@ -12,6 +12,8 @@ builder.Services.AddSession(options =>
     options.IdleTimeout = TimeSpan.FromMinutes(30);
 });
 builder.Services.AddSingleton<SqliteCourseRepository>();
+builder.Services.AddSingleton<IAffiliateDataSource, DemoAffiliateDataSource>();
+builder.Services.AddSingleton<McpToolClient>();
 builder.Services.AddScoped<ChatOrchestrator>();
 builder.Services.AddMcpServer()
 .WithHttpTransport(options =>

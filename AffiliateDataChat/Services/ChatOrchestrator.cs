@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using ModelContextProtocol.Client;
@@ -5,28 +6,25 @@ using ModelContextProtocol.Protocol;
 using OpenAI;
 namespace AffiliateDataChat.Services;
 
-public sealed partial class ChatOrchestrator(IConfiguration configuration, ILogger<ChatOrchestrator> logger)
+public sealed partial class ChatOrchestrator(
+    IConfiguration configuration,
+    McpToolClient mcpToolClient,
+    ILogger<ChatOrchestrator> logger)
 {
-    public string ProviderLabel => IsOpenAiConfigured ? $"OpenAI · {configuration["Ai:Model"]}" : "Guided demo · MCP tools";
+    public string ProviderLabel => IsOpenAiConfigured ? $"OpenAI · {configuration["Ai:Model"]}" : "Guided demo · Affiliate MCP tools";
     private bool IsOpenAiConfigured =>
     string.Equals(configuration["Ai:Provider"], "OpenAI", StringComparison.OrdinalIgnoreCase)
     && !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]);
     public async Task<string> AskAsync(string question, CancellationToken cancellationToken)
     {
-        var endpoint = configuration["Mcp:Endpoint"]
-        ?? throw new InvalidOperationException("Mcp:Endpoint is not configured.");
-        var transport = new HttpClientTransport(new HttpClientTransportOptions
+        return await mcpToolClient.WithDiscoveredToolsAsync(async tools =>
         {
-            Endpoint = new Uri(endpoint),
-            EnableStandaloneGetStream = false
-        });
-        await using var mcpClient = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
-        var tools = await mcpClient.ListToolsAsync(cancellationToken: cancellationToken);
-        if (IsOpenAiConfigured)
-        {
-            return await AskOpenAiAsync(question, tools, cancellationToken);
-        }
-        return await AskDemoAsync(question, tools, cancellationToken);
+            if (IsOpenAiConfigured)
+            {
+                return await AskOpenAiAsync(question, tools, cancellationToken);
+            }
+            return await AskDemoAsync(question, tools, cancellationToken);
+        }, cancellationToken);
     }
     private async Task<string> AskOpenAiAsync(
     string question,
@@ -41,11 +39,15 @@ public sealed partial class ChatOrchestrator(IConfiguration configuration, ILogg
         .AsBuilder()
         .UseFunctionInvocation()
         .Build();
+        var systemPrompt = configuration["Ai:SystemPrompt"]
+            ?? "You are a concise affiliate and campaign-data assistant. Use the MCP tools for every factual data answer. " +
+            "Use affiliate_lookup for affiliate identity or status, campaign_participants_without_sales for zero-sale participants, " +
+            "campaign_summary for campaign totals, and affiliate_ranking for ordered campaign performance. " +
+            "Never invent rows, infer missing data, or run arbitrary SQL. State when no result is found. " +
+            "The current environment may use demo data until the affiliate dataset is connected.";
         var messages = new List<ChatMessage>
 {
-new(ChatRole.System,
-"You are a concise university course-data assistant. Use the MCP tools for every factual data answer. " +
-"Never invent rows or run arbitrary SQL. State when no result is found. Mention course codes when available."),
+ new(ChatRole.System, systemPrompt),
 new(ChatRole.User, question)
 };
         var response = await client.GetResponseAsync(messages, new ChatOptions
@@ -53,6 +55,7 @@ new(ChatRole.User, question)
             Tools = [.. tools],
             MaxOutputTokens = 700
         }, cancellationToken);
+        logger.LogInformation("OpenAI response completed using {ToolCount} discovered MCP tools and model {Model}.", tools.Count, model);
         return response.Text;
     }
     private async Task<string> AskDemoAsync(
@@ -63,41 +66,52 @@ new(ChatRole.User, question)
         var lower = question.ToLowerInvariant();
         McpClientTool tool;
         IReadOnlyDictionary<string, object?>? arguments;
-        var code = CourseCodeRegex().Match(question);
-        if (code.Success)
+        var campaignId = CampaignIdRegex().Match(question);
+        if (lower.Contains("without sales") || lower.Contains("no sales") || lower.Contains("zero sales"))
         {
-            tool = FindTool(tools, "get_course_by_code");
-            arguments = new Dictionary<string, object?> { ["code"] = code.Value.ToUpperInvariant() };
+            tool = FindTool(tools, "campaign_participants_without_sales");
+            arguments = new Dictionary<string, object?> { ["campaignId"] = campaignId.Success ? campaignId.Value.ToUpperInvariant() : "SPRING-2026" };
         }
-        else if (lower.Contains("top") || lower.Contains("largest") || lower.Contains("highest enrollment"))
+        else if ((lower.Contains("campaign") || lower.Contains("affiliate")) && (lower.Contains("summary") || lower.Contains("overview") || lower.Contains("total")))
         {
-            tool = FindTool(tools, "top_courses_by_enrollment");
-            arguments = new Dictionary<string, object?> { ["count"] = ExtractCount(question) };
+            tool = FindTool(tools, "campaign_summary");
+            arguments = new Dictionary<string, object?> { ["campaignId"] = campaignId.Success ? campaignId.Value.ToUpperInvariant() : "SPRING-2026" };
         }
-        else if (lower.Contains("summary") || lower.Contains("total") || lower.Contains("average"))
+        else if ((lower.Contains("rank") || lower.Contains("top affiliates") || lower.Contains("best affiliates")) && lower.Contains("affiliate"))
         {
-            tool = FindTool(tools, "summarize_enrollment");
-            arguments = null;
+            tool = FindTool(tools, "affiliate_ranking");
+            arguments = new Dictionary<string, object?>
+            {
+                ["campaignId"] = campaignId.Success ? campaignId.Value.ToUpperInvariant() : "SPRING-2026",
+                ["limit"] = ExtractCount(question)
+            };
+        }
+        else if (lower.Contains("affiliate") || lower.Contains("partner"))
+        {
+            tool = FindTool(tools, "affiliate_lookup");
+            var affiliateId = AffiliateIdRegex().Match(question);
+            arguments = new Dictionary<string, object?>
+            {
+                ["query"] = affiliateId.Success ? affiliateId.Value.ToUpperInvariant() : ExtractAffiliateQuery(question)
+            };
         }
         else
         {
-            tool = FindTool(tools, "search_courses");
+            tool = FindTool(tools, "affiliate_lookup");
+            var affiliateId = AffiliateIdRegex().Match(question);
             arguments = new Dictionary<string, object?>
             {
-                ["department"] = lower.Contains("business analytics") ? "Business Analytics"
-            : lower.Contains("information systems") ? "Information Systems"
-            : lower.Contains(" ai ") || lower.StartsWith("ai ") || lower.Contains("artificial intelligence") ? "AI"
-            : null,
-                ["deliveryMode"] = lower.Contains("online") ? "Online"
-                : lower.Contains("hybrid") ? "Hybrid"
-: lower.Contains("in person") ? "In Person"
-: null,
-                ["minimumEnrollment"] = ExtractMinimumEnrollment(question)
+                ["query"] = affiliateId.Success ? affiliateId.Value.ToUpperInvariant() : ExtractAffiliateQuery(question)
             };
         }
         logger.LogInformation("Demo mode selected MCP tool {ToolName}.", tool.Name);
+        var started = Stopwatch.GetTimestamp();
         var result = await tool.CallAsync(arguments, cancellationToken: cancellationToken);
         var text = string.Join("\n", result.Content.OfType<TextContentBlock>().Select(block => block.Text));
+        logger.LogInformation("MCP tool {ToolName} completed in {ElapsedMs} ms with {ContentBlocks} content blocks.",
+            tool.Name,
+            Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            result.Content.Count);
         return $"Demo mode used the MCP tool `{tool.Name}`.\n\n{text}\n\nConfigure an OpenAI key to receive a natural-language interpretation.";
     }
     private static McpClientTool FindTool(IEnumerable<McpClientTool> tools, string name) =>
@@ -107,11 +121,11 @@ new(ChatRole.User, question)
         var match = Regex.Match(question, @"\b([1-9]|10)\b");
         return match.Success ? int.Parse(match.Value) : 5;
     }
-    private static int? ExtractMinimumEnrollment(string question)
+    private static string ExtractAffiliateQuery(string question)
     {
-        var match = Regex.Match(question, @"(?:at least|minimum|more than)\s+(\d+)", RegexOptions.IgnoreCase);
-        return match.Success ? int.Parse(match.Groups[1].Value) : null;
+        var cleaned = Regex.Replace(question, "\\b(affiliate|partner|lookup|find|search|for|who|is|the)\\b", " ", RegexOptions.IgnoreCase);
+        return string.IsNullOrWhiteSpace(cleaned) ? "AFF-1001" : cleaned.Trim();
     }
-    [GeneratedRegex(@"\b(?:AI|BA|IS)-\d{3}\b", RegexOptions.IgnoreCase)]
-    private static partial Regex CourseCodeRegex();
+    private static Regex CampaignIdRegex() => new(@"\b[A-Z]{2,20}-\d{4}\b", RegexOptions.IgnoreCase);
+    private static Regex AffiliateIdRegex() => new(@"\bAFF-\d{4}\b", RegexOptions.IgnoreCase);
 }
