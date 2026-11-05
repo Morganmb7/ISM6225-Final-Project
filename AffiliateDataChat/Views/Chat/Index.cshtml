@@ -22,7 +22,7 @@ ViewData["Title"] = "Chat";
         </div>
         <form asp-action="Ask" method="post" class="ask-form">
             <label asp-for="Question"></label>
-<textarea asp-for="Question" rows="3" maxlength="500" placeholder="Ask a question grounded in the affiliate data..."></textarea>
+            <textarea asp-for="Question" rows="3" maxlength="500" placeholder="Ask a question grounded in the affiliate data..."></textarea>
             <span asp-validation-for="Question" class="validation"></span>
             <button class="button" type="submit">Ask</button>
         </form>
